@@ -32,4 +32,6 @@ contextBridge.exposeInMainWorld('api', {
   selfUpdateOpenRelease: () => ipcRenderer.invoke('selfupdate:openRelease'),
   getVersion: () => ipcRenderer.invoke('app:version'),
   getPlatform: () => ipcRenderer.invoke('app:platform'),
+  getStartupMode: () => ipcRenderer.invoke('startup:mode'),
+  onStartupStatus: (cb) => ipcRenderer.on('startup:status', (_e, message) => cb(message)),
 });

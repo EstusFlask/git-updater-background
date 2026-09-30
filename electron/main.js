@@ -16,6 +16,7 @@ const platform = require('../src/platform');
 const paths = require('../src/paths');
 const catalog = require('../src/catalog');
 const selfupdate = require('../src/selfupdate');
+const autostart = require('../src/autostart');
 const { log, LOG_FILE } = require('../src/log');
 
 // macOS self-updates in place via Squirrel.Mac (electron/macupdate.js), not the launcher model
@@ -111,6 +112,7 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, '..', 'ui', 'index.html'));
+  win.webContents.once('did-finish-load', () => { if (startupStatus) win.webContents.send('startup:status', startupStatus); });
 }
 
 // --- IPC: the only bridge between the renderer and the engine -----------------
@@ -240,6 +242,13 @@ ipcMain.handle('app:launch', async (_e, appKey) => {
   return { ok: true, path: target };
 });
 ipcMain.handle('config:save', (_e, cfg) => {
+  const previous = readConfig();
+  if (!!cfg.autoStart !== !!previous.autoStart) {
+    const launcherPath = process.platform === 'linux' && process.env.APPIMAGE
+      ? process.env.APPIMAGE
+      : path.join(ROOT, path.basename(process.execPath));
+    autostart.setEnabled(app, !!cfg.autoStart, launcherPath);
+  }
   saveConfigFile(cfg);
   return { ok: true };
 });
@@ -461,7 +470,117 @@ ipcMain.handle('selfupdate:apply', async (e) => {
   }
 });
 
-// --- lifecycle: launcher hand-off, single instance, on-demand -------------------
+// --- login run: check tracked installed apps, optionally prompt, then exit ---
+let startupStatus = '';
+let startupRunning = false;
+let loginRun = false;
+let manualOpenedDuringStartup = false;
+ipcMain.handle('startup:mode', () => loginRun);
+function reportStartup(message) {
+  startupStatus = message;
+  log(`auto-start: ${message}`);
+  if (win && !win.isDestroyed()) win.webContents.send('startup:status', message);
+}
+
+async function installedForStartup(repo, cfg) {
+  if (repo.type === 'portable' && dirHasFiles(portableDir(cfg, repo))) return true;
+  try { return !!(await detect.installedVersion(repo.detect || repo.repo)); }
+  catch { return false; }
+}
+
+async function waitForExternalInstall(repo, before, targetVersion) {
+  const deadline = Date.now() + 10 * 60 * 1000;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    try {
+      detect.clearCache();
+      const current = await detect.installedVersion(repo.detect || repo.repo);
+      if (current && current !== before && core.cmpVersion(current, targetVersion) >= 0) return true;
+    } catch {}
+  }
+  return false;
+}
+
+async function runStartupUpdates() {
+  startupRunning = true;
+  updating = true;
+  try {
+    const cfg = readConfig();
+    if (!cfg.autoStart) return;
+    reportStartup('Checking tracked apps for updates…');
+    const checked = await runner.run(core.validateConfig(cfg), { mode: 'check' });
+    applyRetypes(checked.results);
+    const checkFailures = checked.results.filter((x) => x.status === 'failed');
+    for (const r of checkFailures) log(`auto-start check failed ${r.id}: ${r.reason}`);
+    // A tracked but absent app is an install, not an update. A retyped entry needs a
+    // fresh check on its next run so we never install the wrong package format.
+    const available = [];
+    for (const r of checked.results.filter((x) => x.status === 'updated' && !x.retyped)) {
+      const repo = cfg.repos.find((x) => `${x.owner}/${x.repo}#${x.type}` === r.id);
+      if (repo && await installedForStartup(repo, cfg)) available.push(r);
+    }
+    if (!available.length) {
+      reportStartup(checkFailures.length ? `${checkFailures.length} update checks failed; see log.` : 'No updates available.');
+      return;
+    }
+    reportStartup(`${available.length} update${available.length === 1 ? '' : 's'} available.`);
+    if (cfg.autoStartPrompt !== false) {
+      const options = {
+        type: 'question', title: 'git-updater',
+        message: `${available.length} app update${available.length === 1 ? '' : 's'} available`,
+        detail: available.map((r) => `${r.repo}: ${r.from} → ${r.to}`).join('\n'),
+        buttons: ['Update now', 'Later'], defaultId: 0, cancelId: 1, noLink: true,
+      };
+      const choice = win && !win.isDestroyed()
+        ? await dialog.showMessageBox(win, options)
+        : await dialog.showMessageBox(options);
+      if (choice.response !== 0) { reportStartup('Update postponed.'); return; }
+    }
+    let done = 0, failed = 0;
+    for (const item of available) {
+      reportStartup(`Updating ${item.repo} (${done + failed + 1}/${available.length})…`);
+      let lock = null;
+      try {
+        const repo = readConfig().repos.find((x) => `${x.owner}/${x.repo}#${x.type}` === item.id);
+        const before = repo ? await detect.installedVersion(repo.detect || repo.repo).catch(() => null) : null;
+        lock = state.acquireLock();
+        const result = await runner.run(core.validateConfig(readConfig()), {
+          only: item.id,
+          onProgress: (id, phase, pct) => {
+            if (phase === 'downloading' && pct != null) reportStartup(`${item.repo}: ${pct}% downloaded`);
+          },
+          openFile: (file) => shell.openPath(file),
+        });
+        const row = result.results[0];
+        if (row && (row.status === 'updated' || row.status === 'current')) done++;
+        else if (repo && row && /installer window opened|disk image opened/.test(row.reason || '')) {
+          reportStartup(`Waiting for ${item.repo}'s installer to finish…`);
+          if (await waitForExternalInstall(repo, before, item.to)) done++;
+          else { failed++; log(`auto-start update timed out waiting for ${item.id}'s installer`); }
+        }
+        else { failed++; log(`auto-start update failed ${item.id}: ${row && row.reason || 'no result'}`); }
+      } catch (e) {
+        failed++;
+        log(`auto-start update failed ${item.id}: ${e && e.stack ? e.stack : e}`);
+      } finally {
+        state.releaseLock(lock);
+      }
+    }
+    reportStartup(`${done} updated, ${failed} failed.`);
+  } catch (e) {
+    log(`auto-start failed: ${e && e.stack ? e.stack : e}`);
+    reportStartup(`Update check failed: ${e.message || e}`);
+  } finally {
+    updating = false;
+    startupRunning = false;
+    if (manualOpenedDuringStartup) {
+      loginRun = false;
+      reportStartup('Login update task finished.');
+    } else app.quit();
+  }
+}
+
+// --- lifecycle: launcher hand-off, single instance, login or on-demand --------
 (async () => {
   // Relaunch after a self-update: the updating process still holds the single-instance lock
   // until it exits, so wait for it before handing off.
@@ -473,7 +592,7 @@ ipcMain.handle('selfupdate:apply', async (e) => {
   const target = app.isPackaged ? selfupdate.handoffTarget(process.execPath, app.getVersion()) : null;
   if (target) {
     log(`launcher: handing off to ${target.dir}`);
-    selfupdate.launch(target.dir);
+    selfupdate.launch(target.dir, process.argv.includes(autostart.ARG) ? [autostart.ARG] : []);
     app.exit(0);
     return;
   }
@@ -482,7 +601,10 @@ ipcMain.handle('selfupdate:apply', async (e) => {
     app.quit();
     return;
   }
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
+    if (argv.includes(autostart.ARG)) return;
+    if (startupRunning) manualOpenedDuringStartup = true;
+    if (!win || win.isDestroyed()) createWindow();
     if (win) {
       if (win.isMinimized()) win.restore();
       win.focus();
@@ -496,14 +618,18 @@ ipcMain.handle('selfupdate:apply', async (e) => {
     github.setFetch((url, init) => net.fetch(url, init));
     migrateConfig();
     if (app.isPackaged) selfupdate.cleanupLeftovers(ROOT, app.getVersion()).catch(() => {});
-    createWindow();
+    loginRun = app.isPackaged && (process.argv.includes(autostart.ARG) || (IS_MAC && app.getLoginItemSettings().wasOpenedAtLogin));
+    if (loginRun) {
+      if (readConfig().autoStart && readConfig().autoStartShowWindow) createWindow();
+      runStartupUpdates();
+    } else {
+      createWindow();
+    }
   });
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
-  // Close the window -> everything exits, on every platform INCLUDING macOS, where the
-  // convention is normally to stay resident in the dock. That convention is declined on
-  // purpose: git-updater runs nothing at startup, keeps no background service and phones
-  // home never, and a process lingering after the window closes would contradict that.
-  app.on('window-all-closed', () => app.quit());
+  // A visible login run may keep updating after the user closes its window. Ordinary
+  // interactive runs still exit when their last window closes.
+  app.on('window-all-closed', () => { if (!startupRunning) app.quit(); });
 })();

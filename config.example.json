@@ -1,5 +1,8 @@
 {
   "portableRoot": "C:/PortableApps",
+  "autoStart": false,
+  "autoStartPrompt": true,
+  "autoStartShowWindow": false,
   "repos": [
     { "owner": "ShareX", "repo": "ShareX", "type": "portable" },
     { "owner": "deskflow", "repo": "deskflow", "type": "portable" },

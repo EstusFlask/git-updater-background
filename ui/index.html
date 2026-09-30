@@ -253,6 +253,17 @@
         <label class="scan-label"><input type="checkbox" id="checkOnOpen"> Check for updates when git-updater opens</label>
       </div>
       <p class="hint">Off by default: git-updater stays on-demand. On, opening the window checks every tracked app — it never updates or installs anything automatically.</p>
+      <div class="row" style="margin-top:.6rem">
+        <span style="color:var(--muted);font-size:.9rem;min-width:8rem">At login</span>
+        <label class="scan-label"><input type="checkbox" id="autoStart"> Start at login and check tracked apps</label>
+      </div>
+      <div class="row" style="margin-top:.4rem; padding-left:8rem">
+        <label class="scan-label"><input type="checkbox" id="autoStartPrompt"> Ask before installing available updates</label>
+      </div>
+      <div class="row" style="margin-top:.4rem; padding-left:8rem">
+        <label class="scan-label"><input type="checkbox" id="autoStartShowWindow"> Show the window at login</label>
+      </div>
+      <p class="hint">When asking is off, available updates install automatically. The login task closes when finished; errors are recorded in the log. Only apps already installed are updated.</p>
       <p class="hint">git-updater <span id="appVersion"></span></p>
     </div>
   </details>
@@ -264,6 +275,7 @@ const st = {};       // appKey -> { ph, pct, from(current), to(available), reaso
 const selected = new Set();
 let busy = false;
 let booted = false; // first window load done — guards the check-on-open from config reloads
+let loginMode = false;
 
 const $ = (id) => document.getElementById(id);
 const keyOf = (r) => `${r.owner}/${r.repo}#${r.type}`;
@@ -430,12 +442,18 @@ async function refreshInstalled() {
   } catch {}
 }
 async function load() {
+  loginMode = await window.api.getStartupMode().catch(() => false);
   window.api.getVersion().then((v) => { $('appVersion').textContent = v; }).catch(() => {});
   config = await window.api.getConfig();
   if (!config.repos) config.repos = [];
   $('portableRoot').value = config.portableRoot || '';
   $('selfPreRel').checked = !!config.selfUpdatePrerelease;
   $('checkOnOpen').checked = !!config.checkOnOpen;
+  $('autoStart').checked = !!config.autoStart;
+  $('autoStartPrompt').checked = config.autoStartPrompt !== false;
+  $('autoStartShowWindow').checked = !!config.autoStartShowWindow;
+  $('autoStartPrompt').disabled = !config.autoStart;
+  $('autoStartShowWindow').disabled = !config.autoStart;
   config.repos.forEach((r) => { st[keyOf(r)] = { ph: 'loading' }; }); // show rows instantly
   renderRepos();
   await refreshInstalled(); // slower registry/manifest detection
@@ -452,7 +470,7 @@ async function load() {
     // Check on open: one-shot after the first render. load() re-runs on config changes
     // (scan window, folder save), which must not re-trigger it; the button stays the
     // manual path, so this runs the exact same code as "Check all".
-    if (config.checkOnOpen && config.repos.length) {
+    if (!loginMode && config.checkOnOpen && config.repos.length) {
       msg('Checking for updates…', 'info');
       selfCheck();
       checkApps(config.repos.map(keyOf));
@@ -463,6 +481,26 @@ async function load() {
 $('saveRoot').onclick = () => saveConfig().then(() => { msg('Saved.', 'ok'); refreshInstalled().then(renderRepos); });
 $('selfPreRel').onchange = () => { config.selfUpdatePrerelease = $('selfPreRel').checked; saveConfig().then(() => msg('Saved.', 'ok')); };
 $('checkOnOpen').onchange = () => { config.checkOnOpen = $('checkOnOpen').checked; saveConfig().then(() => msg('Saved.', 'ok')); };
+async function saveStartupSettings() {
+  config.autoStart = $('autoStart').checked;
+  config.autoStartPrompt = $('autoStartPrompt').checked;
+  config.autoStartShowWindow = $('autoStartShowWindow').checked;
+  try {
+    await window.api.saveConfig(config);
+    $('autoStartPrompt').disabled = !config.autoStart;
+    $('autoStartShowWindow').disabled = !config.autoStart;
+    msg('Saved.', 'ok');
+  } catch (e) {
+    msg(clean(e), 'bad');
+    const saved = await window.api.getConfig();
+    config = saved;
+    $('autoStart').checked = !!saved.autoStart;
+    $('autoStartPrompt').checked = saved.autoStartPrompt !== false;
+    $('autoStartShowWindow').checked = !!saved.autoStartShowWindow;
+  }
+}
+['autoStart', 'autoStartPrompt', 'autoStartShowWindow'].forEach((id) => { $(id).onchange = saveStartupSettings; });
+window.api.onStartupStatus((message) => msg(message, 'info'));
 $('browse').onclick = async () => {
   try { const { path } = await window.api.pickFolder(); if (path) { $('portableRoot').value = path; await saveConfig(); msg('Saved.', 'ok'); refreshInstalled().then(renderRepos); } }
   catch (e) { msg(clean(e), 'bad'); }

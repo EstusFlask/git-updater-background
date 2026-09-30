@@ -77,8 +77,8 @@
       "publish": [
         {
           "provider": "github",
-          "owner": "TeeJS",
-          "repo": "git-updater"
+          "owner": "EstusFlask",
+          "repo": "git-updater-background"
         }
       ]
     },
