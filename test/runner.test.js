@@ -29,13 +29,14 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'gu-runner-'));
 
 // `running` is consulted per call, so a test can say "idle at download time, launched by
 // install time" — which is the race the second check exists for.
-async function withStubs({ running }, fn) {
+async function withStubs({ running, closeApp }, fn) {
   const real = {
     getLatestRelease: github.getLatestRelease,
     downloadAsset: github.downloadAsset,
     verifyDigest: github.verifyDigest,
     fetchChecksumFromRelease: github.fetchChecksumFromRelease,
     isRunning: detect.isRunning,
+    closeApp: detect.closeApp,
     clearCache: detect.clearCache,
   };
   let call = 0;
@@ -52,6 +53,7 @@ async function withStubs({ running }, fn) {
   github.fetchChecksumFromRelease = async () => null;
   detect.clearCache = () => {};
   detect.isRunning = async () => running[Math.min(call++, running.length - 1)];
+  if (closeApp) detect.closeApp = closeApp;
   try {
     return await fn(() => call);
   } finally {
@@ -62,6 +64,7 @@ async function withStubs({ running }, fn) {
       fetchChecksumFromRelease: real.fetchChecksumFromRelease,
     });
     detect.isRunning = real.isRunning;
+    detect.closeApp = real.closeApp;
     detect.clearCache = real.clearCache;
   }
 }
@@ -121,6 +124,29 @@ test('runner: an app already running is refused before anything is downloaded', 
       assert.equal(results[0].status, 'failed');
       assert.equal(calls(), 1, 'no point downloading what cannot be installed');
     });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runner: login close setting closes a running app after download, forcing only if needed', async () => {
+  const dir = tmp();
+  const closes = [];
+  try {
+    await withStubs({
+      running: [true],
+      closeApp: async (_name, options = {}) => {
+        closes.push(!!options.force);
+        return { stillRunning: !options.force };
+      },
+    }, async () => {
+      const { results } = await runner.run(configFor(dir), {
+        statePath: path.join(dir, 'state.json'), closeRunningApps: true,
+      });
+      assert.equal(results[0].status, 'updated', results[0].reason);
+    });
+    assert.deepEqual(closes, [false, true]);
+    assert.equal(fs.readFileSync(path.join(dir, 'widget', 'app.txt'), 'utf8'), 'v2');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

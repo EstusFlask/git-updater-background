@@ -54,6 +54,17 @@ test('detectInstallerKind: recognizes MSI, Inno, NSIS from bytes; null when unkn
   }
 });
 
+test('detectInstallerKind finds a signature split across read chunks', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gu-installer-kind-'));
+  try {
+    const file = path.join(dir, 'large.exe');
+    fs.writeFileSync(file, Buffer.concat([Buffer.alloc(1024 * 1024 - 4), Buffer.from('Inno Setup')]));
+    assert.equal(install.detectInstallerKind(file), 'inno');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // --- transactional portable install (#6) -------------------------------------
 
 const AdmZip = require('adm-zip');

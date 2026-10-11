@@ -367,21 +367,30 @@ async function installPortable(archivePath, install, prevManifest) {
 // "open the installer's own window" rather than guessing silent switches.
 function detectInstallerKind(filePath) {
   if (/\.msi$/i.test(filePath)) return 'msi';
-  let buf;
+  let fd;
+  try { fd = fs.openSync(filePath, 'r'); } catch { return null; }
   try {
-    buf = fs.readFileSync(filePath);
-  } catch {
+    const chunk = Buffer.allocUnsafe(1024 * 1024);
+    let carry = Buffer.alloc(0);
+    let first = true;
+    let count;
+    while ((count = fs.readSync(fd, chunk, 0, chunk.length, null)) > 0) {
+      const buf = first ? chunk.subarray(0, count) : Buffer.concat([carry, chunk.subarray(0, count)]);
+      if (first) {
+        first = false;
+        if (count > 8 && buf[0] === 0xd0 && buf[1] === 0xcf && buf[2] === 0x11 && buf[3] === 0xe0) return 'msi';
+        if (buf.subarray(0, 4).toString('latin1') === 'xar!') return 'pkg';
+        if (buf.subarray(0, 7).toString('latin1') === '!<arch>') return 'deb';
+        if (count > 4 && buf[0] === 0xed && buf[1] === 0xab && buf[2] === 0xee && buf[3] === 0xdb) return 'rpm';
+      }
+      if (buf.indexOf('Inno Setup') !== -1) return 'inno';
+      if (buf.indexOf('Nullsoft') !== -1) return 'nsis';
+      carry = Buffer.from(buf.subarray(Math.max(0, buf.length - 9)));
+    }
     return null;
+  } finally {
+    fs.closeSync(fd);
   }
-  const magic = (s) => buf.subarray(0, s.length).toString('latin1') === s;
-  if (buf.length > 8 && buf[0] === 0xd0 && buf[1] === 0xcf && buf[2] === 0x11 && buf[3] === 0xe0) return 'msi'; // OLE compound = MSI
-  if (magic('xar!')) return 'pkg'; // macOS flat package is a xar archive
-  if (magic('!<arch>')) return 'deb'; // .deb is an ar archive
-  if (buf.length > 4 && buf[0] === 0xed && buf[1] === 0xab && buf[2] === 0xee && buf[3] === 0xdb) return 'rpm';
-  // These two scan the whole file, so they come last.
-  if (buf.indexOf(Buffer.from('Inno Setup')) !== -1) return 'inno';
-  if (buf.indexOf(Buffer.from('Nullsoft')) !== -1) return 'nsis';
-  return null;
 }
 
 // --- installer --------------------------------------------------------------

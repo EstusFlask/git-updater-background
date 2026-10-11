@@ -2,6 +2,9 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const github = require('../src/github');
 
 // Minimal Response-ish stub for the rate-limit branch.
@@ -214,4 +217,26 @@ test('verifyDigest: skips with a note when no digest', () => {
   const r = github.verifyDigest('/any/path', undefined);
   assert.ok(r.skipped);
   assert.match(r.note, /skipped/);
+});
+
+test('downloadAsset enforces the configured cap while streaming and accepts unlimited mode', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gu-download-limit-'));
+  const realFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true,
+    headers: { get: () => null },
+    body: new ReadableStream({ start(controller) {
+      controller.enqueue(Uint8Array.from([1, 2, 3, 4]));
+      controller.close();
+    } }),
+  });
+  try {
+    const file = path.join(dir, 'asset.bin');
+    await assert.rejects(() => github.downloadAsset('https://example.invalid/asset', file, null, 3), /size cap 3/);
+    await github.downloadAsset('https://example.invalid/asset', file, null, null);
+    assert.deepEqual([...fs.readFileSync(file)], [1, 2, 3, 4]);
+  } finally {
+    global.fetch = realFetch;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

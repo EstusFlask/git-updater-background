@@ -78,6 +78,7 @@ function readConfig() {
 // Light structural check; the portable-folder requirement is enforced at check/update.
 function saveConfigFile(cfg) {
   if (!cfg || !Array.isArray(cfg.repos)) throw new Error('config: "repos" must be an array');
+  core.downloadLimitBytes(cfg);
   cfg.repos.forEach((r, i) => {
     if (!r.owner || !r.repo) throw new Error(`app ${i + 1}: owner and repo are required`);
     if (r.type !== 'portable' && r.type !== 'installer') throw new Error(`app ${i + 1}: type must be portable or installer`);
@@ -354,7 +355,8 @@ ipcMain.handle('asset:preview', async (_e, appKey) => {
 ipcMain.handle('selfupdate:check', async () => {
   if (!app.isPackaged) return null; // dev run
   try {
-    const prerelease = !!readConfig().selfUpdatePrerelease; // self-update beta channel (Settings)
+    const cfg = readConfig();
+    const prerelease = !!cfg.selfUpdatePrerelease; // self-update beta channel (Settings)
     if (IS_MAC) {
       // macOS applies in place via Squirrel.Mac (electron-updater), reading latest-mac.yml off
       // our GitHub releases — so what the banner reports is exactly what will install.
@@ -448,7 +450,8 @@ ipcMain.handle('selfupdate:apply', async (e) => {
   updating = true;
   try {
     const onProgress = (phase, pct) => e.sender.send('update:progress', { id: 'self', phase, pct });
-    const prerelease = !!readConfig().selfUpdatePrerelease; // self-update beta channel (Settings)
+    const cfg = readConfig();
+    const prerelease = !!cfg.selfUpdatePrerelease; // self-update beta channel (Settings)
     if (IS_MAC) {
       // Squirrel.Mac downloads+verifies the signed zip, swaps the bundle and relaunches; it
       // owns the restart, so there is no launcher hand-off or app.exit here.
@@ -456,7 +459,7 @@ ipcMain.handle('selfupdate:apply', async (e) => {
       log(`self-update(mac): restarting into ${r.version}`);
       return r;
     }
-    const { tag } = await selfupdate.prepareUpdate(ROOT, app.getVersion(), onProgress, { prerelease });
+    const { tag } = await selfupdate.prepareUpdate(ROOT, app.getVersion(), onProgress, { prerelease, maxBytes: core.downloadLimitBytes(cfg) });
     selfupdate.writeApplyMarker({ expectVersion: tag });
     selfupdate.relaunchViaLauncher(ROOT, process.pid);
     log(`self-update: restarting into ${tag}`);
@@ -546,6 +549,7 @@ async function runStartupUpdates() {
         lock = state.acquireLock();
         const result = await runner.run(core.validateConfig(readConfig()), {
           only: item.id,
+          closeRunningApps: !!cfg.autoStartCloseApps,
           onProgress: (id, phase, pct) => {
             if (phase === 'downloading' && pct != null) reportStartup(`${item.repo}: ${pct}% downloaded`);
           },

@@ -55,9 +55,13 @@ The tarball has no such requirement, which is why it is the recommended Linux do
   transactional — a failed or interrupted update restores the previous version completely,
   and your settings inside the app folder survive. Installers that need admin rights fall
   back to their own window with a normal UAC prompt.
+- **Configurable download limit.** Settings defaults to 500 MiB per asset. Raise the
+  limit for large installers or turn it off; large files are hashed and inspected in chunks.
 - **Optional login updates.** In Settings, start at login to check tracked apps, choose
-  whether to ask before updating, and choose a hidden or visible window. The task updates
-  apps already installed and exits when complete. It also tells you when git-updater itself
+  whether to ask before updating, whether to close running apps before installing, and
+  whether to show the window. Closing apps tries a normal exit first and then forces them
+  closed if needed; unsaved work may be lost. The task updates apps already installed and
+  exits when complete. It also tells you when git-updater itself
   has a new release during a manual check.
 
 ## On macOS

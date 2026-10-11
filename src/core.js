@@ -291,10 +291,23 @@ function resolvePortableDir(portableRoot, repoName) {
   return `${String(portableRoot).replace(/[\\/]+$/, '')}/${repoName}`;
 }
 
+// Older configs keep the original 500 MiB cap. Explicitly disabling it removes the cap.
+function downloadLimitBytes(config) {
+  if (config.downloadLimitEnabled != null && typeof config.downloadLimitEnabled !== 'boolean') {
+    throw new Error('downloadLimitEnabled must be a boolean');
+  }
+  const mib = config.downloadLimitMiB == null ? 500 : config.downloadLimitMiB;
+  if (!Number.isSafeInteger(mib) || mib < 1 || mib > 1048576) {
+    throw new Error('downloadLimitMiB must be a whole number from 1 to 1048576');
+  }
+  return config.downloadLimitEnabled === false ? null : mib * 1024 * 1024;
+}
+
 // Validates, and fills each portable entry's install.dir from a top-level
 // portableRoot when omitted. Mutates json in place so callers get resolved dirs.
 function validateConfig(json) {
   if (!json || !Array.isArray(json.repos)) throw new Error('config: "repos" array is required');
+  downloadLimitBytes(json);
   json.repos.forEach((r, i) => {
     const at = `repos[${i}]`;
     if (!r.owner || !r.repo) throw new Error(`${at}: "owner" and "repo" are required`);
@@ -429,6 +442,7 @@ module.exports = {
   guessKind,
   installerCmd,
   validateConfig,
+  downloadLimitBytes,
   resolvePortableDir,
   buildSummary,
   INSTALLER_SWITCHES,

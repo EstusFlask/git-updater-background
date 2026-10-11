@@ -1,7 +1,10 @@
 {
   "portableRoot": "C:/PortableApps",
+  "downloadLimitEnabled": true,
+  "downloadLimitMiB": 500,
   "autoStart": false,
   "autoStartPrompt": true,
+  "autoStartCloseApps": false,
   "autoStartShowWindow": false,
   "repos": [
     { "owner": "ShareX", "repo": "ShareX", "type": "portable" },

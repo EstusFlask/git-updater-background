@@ -38,6 +38,9 @@
     background: #0d1117; border: 1px solid var(--border); }
   input[type=text]:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(227,161,60,.18); }
   input[type=text]::placeholder { color: var(--faint); }
+  input[type=number] { font: 400 14px var(--mono); width: 7rem; padding: .5rem .65rem; border-radius: 8px;
+    color: var(--text); background: #0d1117; border: 1px solid var(--border); }
+  input[type=number]:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(227,161,60,.18); }
   input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
   button { font: 600 13.5px var(--sans); cursor: pointer; border-radius: 8px; padding: .46rem .78rem;
            border: 1px solid var(--border); background: #21262d; color: var(--text);
@@ -254,6 +257,14 @@
       </div>
       <p class="hint">Off by default: git-updater stays on-demand. On, opening the window checks every tracked app — it never updates or installs anything automatically.</p>
       <div class="row" style="margin-top:.6rem">
+        <span style="color:var(--muted);font-size:.9rem;min-width:8rem">Downloads</span>
+        <label class="scan-label"><input type="checkbox" id="downloadLimitEnabled"> Limit each download to</label>
+        <input type="number" id="downloadLimitMiB" min="1" max="1048576" step="1" aria-label="Download limit in MiB">
+        <span style="color:var(--muted);font-size:.9rem">MiB</span>
+        <button id="saveDownloadLimit">Save</button>
+      </div>
+      <p class="hint">Default 500 MiB. Turn off for no size limit; large files still need enough disk space.</p>
+      <div class="row" style="margin-top:.6rem">
         <span style="color:var(--muted);font-size:.9rem;min-width:8rem">At login</span>
         <label class="scan-label"><input type="checkbox" id="autoStart"> Start at login and check tracked apps</label>
       </div>
@@ -261,9 +272,12 @@
         <label class="scan-label"><input type="checkbox" id="autoStartPrompt"> Ask before installing available updates</label>
       </div>
       <div class="row" style="margin-top:.4rem; padding-left:8rem">
+        <label class="scan-label"><input type="checkbox" id="autoStartCloseApps"> Close running apps before updating</label>
+      </div>
+      <div class="row" style="margin-top:.4rem; padding-left:8rem">
         <label class="scan-label"><input type="checkbox" id="autoStartShowWindow"> Show the window at login</label>
       </div>
-      <p class="hint">When asking is off, available updates install automatically. The login task closes when finished; errors are recorded in the log. Only apps already installed are updated.</p>
+      <p class="hint">When asking is off, available updates install automatically. Closing apps tries a normal exit first, then forces them closed if needed; unsaved work may be lost. The login task exits when finished. Only installed apps are updated.</p>
       <p class="hint">git-updater <span id="appVersion"></span></p>
     </div>
   </details>
@@ -449,10 +463,15 @@ async function load() {
   $('portableRoot').value = config.portableRoot || '';
   $('selfPreRel').checked = !!config.selfUpdatePrerelease;
   $('checkOnOpen').checked = !!config.checkOnOpen;
+  $('downloadLimitEnabled').checked = config.downloadLimitEnabled !== false;
+  $('downloadLimitMiB').value = config.downloadLimitMiB == null ? 500 : config.downloadLimitMiB;
+  $('downloadLimitMiB').disabled = !$('downloadLimitEnabled').checked;
   $('autoStart').checked = !!config.autoStart;
   $('autoStartPrompt').checked = config.autoStartPrompt !== false;
+  $('autoStartCloseApps').checked = !!config.autoStartCloseApps;
   $('autoStartShowWindow').checked = !!config.autoStartShowWindow;
   $('autoStartPrompt').disabled = !config.autoStart;
+  $('autoStartCloseApps').disabled = !config.autoStart;
   $('autoStartShowWindow').disabled = !config.autoStart;
   config.repos.forEach((r) => { st[keyOf(r)] = { ph: 'loading' }; }); // show rows instantly
   renderRepos();
@@ -481,13 +500,27 @@ async function load() {
 $('saveRoot').onclick = () => saveConfig().then(() => { msg('Saved.', 'ok'); refreshInstalled().then(renderRepos); });
 $('selfPreRel').onchange = () => { config.selfUpdatePrerelease = $('selfPreRel').checked; saveConfig().then(() => msg('Saved.', 'ok')); };
 $('checkOnOpen').onchange = () => { config.checkOnOpen = $('checkOnOpen').checked; saveConfig().then(() => msg('Saved.', 'ok')); };
+$('downloadLimitEnabled').onchange = () => { $('downloadLimitMiB').disabled = !$('downloadLimitEnabled').checked; };
+$('saveDownloadLimit').onclick = async () => {
+  const enabled = $('downloadLimitEnabled').checked;
+  const mib = enabled ? Number($('downloadLimitMiB').value) : (config.downloadLimitMiB || 500);
+  if (!Number.isSafeInteger(mib) || mib < 1 || mib > 1048576) {
+    msg('Enter a whole number from 1 to 1048576 MiB.', 'bad');
+    return;
+  }
+  const next = { ...config, downloadLimitEnabled: enabled, downloadLimitMiB: mib };
+  try { await window.api.saveConfig(next); config = next; $('downloadLimitMiB').value = mib; msg('Saved.', 'ok'); }
+  catch (e) { msg(clean(e), 'bad'); }
+};
 async function saveStartupSettings() {
   config.autoStart = $('autoStart').checked;
   config.autoStartPrompt = $('autoStartPrompt').checked;
+  config.autoStartCloseApps = $('autoStartCloseApps').checked;
   config.autoStartShowWindow = $('autoStartShowWindow').checked;
   try {
     await window.api.saveConfig(config);
     $('autoStartPrompt').disabled = !config.autoStart;
+    $('autoStartCloseApps').disabled = !config.autoStart;
     $('autoStartShowWindow').disabled = !config.autoStart;
     msg('Saved.', 'ok');
   } catch (e) {
@@ -496,10 +529,14 @@ async function saveStartupSettings() {
     config = saved;
     $('autoStart').checked = !!saved.autoStart;
     $('autoStartPrompt').checked = saved.autoStartPrompt !== false;
+    $('autoStartCloseApps').checked = !!saved.autoStartCloseApps;
     $('autoStartShowWindow').checked = !!saved.autoStartShowWindow;
+    $('autoStartPrompt').disabled = !saved.autoStart;
+    $('autoStartCloseApps').disabled = !saved.autoStart;
+    $('autoStartShowWindow').disabled = !saved.autoStart;
   }
 }
-['autoStart', 'autoStartPrompt', 'autoStartShowWindow'].forEach((id) => { $(id).onchange = saveStartupSettings; });
+['autoStart', 'autoStartPrompt', 'autoStartCloseApps', 'autoStartShowWindow'].forEach((id) => { $(id).onchange = saveStartupSettings; });
 window.api.onStartupStatus((message) => msg(message, 'info'));
 $('browse').onclick = async () => {
   try { const { path } = await window.api.pickFolder(); if (path) { $('portableRoot').value = path; await saveConfig(); msg('Saved.', 'ok'); refreshInstalled().then(renderRepos); } }

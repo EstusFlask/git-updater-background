@@ -95,7 +95,7 @@ async function run(config, opts = {}) {
     const id = displayId(repo);
     if (only && id.toLowerCase() !== only && appKey(repo).toLowerCase() !== only) continue;
     try {
-      results.push(await handleRepo(repo, id, st, { ...opts, portableRoot: config.portableRoot }));
+      results.push(await handleRepo(repo, id, st, { ...opts, portableRoot: config.portableRoot, maxBytes: core.downloadLimitBytes(config) }));
     } catch (e) {
       results.push({ repo: id, id: appKey(repo), status: 'failed', reason: e.message });
       log(`FAIL ${appKey(repo)}: ${e.message}`);
@@ -111,6 +111,28 @@ function dirHasFiles(dir) {
   } catch {
     return false;
   }
+}
+
+// Only login updates opt into this. Try a normal close first, then force-close only
+// when the user enabled the setting. A failed download never reaches this point.
+async function readyToInstall(repo, key, opts) {
+  const needle = repo.process || repo.repo;
+  if (!await detect.isRunning(needle)) return null;
+  if (!opts.closeRunningApps) {
+    log(`SKIP ${key}: ${repo.repo} started during the download`);
+    return `${repo.repo} is running — close it, then Retry`;
+  }
+  log(`closing ${key} before update`);
+  let result = await detect.closeApp(needle);
+  if (result.stillRunning) {
+    log(`force-closing ${key} before update`);
+    result = await detect.closeApp(needle, { force: true });
+  }
+  if (result.stillRunning) {
+    log(`SKIP ${key}: could not close ${repo.repo}`);
+    return `${repo.repo} could not be closed — Retry after exiting it`;
+  }
+  return null;
 }
 
 async function handleRepo(repo, id, st, opts) {
@@ -211,7 +233,7 @@ async function handleRepo(repo, id, st, opts) {
 
   // Proactive check: a running app blocks both installers (in-use files) and portable
   // swaps (locked files). Tell the user up front instead of failing mid-download.
-  if (await detect.isRunning(repo.process || repo.repo)) {
+  if (!opts.closeRunningApps && await detect.isRunning(repo.process || repo.repo)) {
     log(`SKIP ${key}: ${repo.repo} is running`);
     return { ...base, status: 'failed', reason: `${repo.repo} is running — close it, then Retry` };
   }
@@ -237,7 +259,7 @@ async function handleRepo(repo, id, st, opts) {
   try {
     const file = path.join(tmp, asset.name);
     emit('downloading', 0);
-    await github.downloadAsset(asset.browser_download_url, file, (pct) => emit('downloading', pct));
+    await github.downloadAsset(asset.browser_download_url, file, (pct) => emit('downloading', pct), opts.maxBytes);
     emit('verifying');
     // Prefer GitHub's own digest; fall back to a checksums file shipped in the release
     // (SHA256SUMS, <asset>.sha256, ...). Only truly digest-less releases skip.
@@ -283,6 +305,8 @@ async function handleRepo(repo, id, st, opts) {
       };
 
       const kind = (repo.install && repo.install.kind) || install.detectInstallerKind(file);
+      const blocked = await readyToInstall(repo, key, opts);
+      if (blocked) return { ...base, status: 'failed', reason: blocked };
       if (!kind) {
         // Unidentifiable installer: never guess silent switches — run its window instead.
         if (interactive(asset.name)) return interactiveResult;
@@ -315,10 +339,8 @@ async function handleRepo(repo, id, st, opts) {
       // So this is not "it crashes". It is old code, new files, one path, and nobody
       // has managed to provoke a failure from that mismatch. Unprovoked is not safe:
       // whatever the app loads next comes from a version it did not start with.
-      if (await detect.isRunning(repo.process || repo.repo)) {
-        log(`SKIP ${key}: ${repo.repo} started during the download`);
-        return { ...base, status: 'failed', reason: `${repo.repo} is running — close it, then Retry` };
-      }
+      const blocked = await readyToInstall(repo, key, opts);
+      if (blocked) return { ...base, status: 'failed', reason: blocked };
       // Transactional dir swap: stale files vanish with the old dir, user files carry over.
       try {
         files = await install.installPortable(file, repo.install, prev.files);

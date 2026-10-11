@@ -10,7 +10,7 @@ const { pipeline } = require('stream/promises');
 
 const API = 'https://api.github.com';
 const UA = 'release-watcher';
-const MAX_BYTES = 500 * 1024 * 1024; // 500 MB download cap
+const DEFAULT_MAX_BYTES = 500 * 1024 * 1024; // legacy default for direct callers
 
 function apiHeaders() {
   const h = {
@@ -174,7 +174,7 @@ async function listAssets(owner, repo, opts = {}) {
 
 // fetch follows redirects by default; enforce the size cap while streaming.
 // onProgress(pct 0-100) is called as bytes arrive (throttled) when a size is known.
-async function downloadAsset(url, destPath, onProgress) {
+async function downloadAsset(url, destPath, onProgress, maxBytes = DEFAULT_MAX_BYTES) {
   // Retry the whole download: a reset can hit either the initial connection (fetch rejects)
   // or the body stream (pipeline rejects). Each attempt re-fetches and overwrites destPath,
   // so a partial file from a failed try is never left behind.
@@ -182,7 +182,7 @@ async function downloadAsset(url, destPath, onProgress) {
     const res = await doFetch(url, { headers: { 'User-Agent': UA } });
     if (!res.ok) throw new Error(`download ${res.status} for ${url}`);
     const declared = Number(res.headers.get('content-length') || 0);
-    if (declared && declared > MAX_BYTES) throw new Error(`asset too large: ${declared} bytes (cap ${MAX_BYTES})`);
+    if (maxBytes != null && declared && declared > maxBytes) throw new Error(`asset too large: ${declared} bytes (cap ${maxBytes})`);
     let seen = 0;
     let lastPct = -1;
     await pipeline(
@@ -190,7 +190,7 @@ async function downloadAsset(url, destPath, onProgress) {
       async function* (source) {
         for await (const chunk of source) {
           seen += chunk.length;
-          if (seen > MAX_BYTES) throw new Error(`asset exceeded size cap ${MAX_BYTES} bytes`);
+          if (maxBytes != null && seen > maxBytes) throw new Error(`asset exceeded size cap ${maxBytes} bytes`);
           if (onProgress && declared) {
             const pct = Math.floor((seen / declared) * 100);
             if (pct !== lastPct) {
@@ -248,7 +248,17 @@ function verifyDigest(filePath, digest) {
   const [algo, expected] = String(digest).split(':');
   if (!['sha256', 'sha512'].includes(algo) || !expected) return { skipped: true, note: `unsupported digest "${digest}"; skipped` };
   const hash = crypto.createHash(algo);
-  hash.update(fs.readFileSync(filePath)); // ponytail: whole-file read; stream if assets get very large
+  // Hash in bounded chunks: installer downloads can be several GiB.
+  const fd = fs.openSync(filePath, 'r');
+  const chunk = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    let count;
+    while ((count = fs.readSync(fd, chunk, 0, chunk.length, null)) > 0) {
+      hash.update(chunk.subarray(0, count));
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
   const actual = hash.digest('hex');
   if (actual.toLowerCase() !== expected.toLowerCase()) {
     throw new Error(`checksum mismatch (expected ${expected.slice(0, 12)}…, got ${actual.slice(0, 12)}…)`);
