@@ -1,3 +1,9 @@
+# git-updater-background
+
+A fork of [TeeJS/git-updater](https://github.com/TeeJS/git-updater) adding optional login-time checks/updates, configurable download limits, and closing running apps before updating.
+
+[简体中文](README.zh-CN.md)
+
 <p align="center">
   <img src="docs/logo.png" alt="git-updater" width="440">
 </p>
@@ -9,26 +15,11 @@ self-hosted **Ninite replacement**: you pick the apps, it checks their latest re
 updates them, portable apps and installed programs alike. No accounts or store — just your
 list and GitHub.
 
-## Get it
+## Get this fork
 
-Grab the build for your machine from **[Releases](https://github.com/EstusFlask/git-updater-background/releases)**.
+Download the files actually listed in [this fork's Releases](https://github.com/EstusFlask/git-updater-background/releases). Its published `v0.2.6` assets are Windows x64/arm64 ZIPs: extract a ZIP and run `git-updater.exe`. For other platforms, use a source build or consult upstream releases; upstream binaries do not automatically include this fork's changes.
 
-| | Download | Run it |
-|---|---|---|
-| **Windows** | `git-updater-<v>-<arch>.zip` (x64, arm64) | unzip anywhere, run `git-updater.exe` |
-| **macOS** | `git-updater-<v>-mac-arm64.dmg` (Apple Silicon) | open it, drag to Applications |
-| **Linux** | `git-updater-<v>-linux-<arch>.tar.gz` (x64, arm64) | extract anywhere, run `git-updater` |
-
-No setup, no admin rights, and no persistent background service. A login update task exits
-when it finishes.
-Windows builds are Authenticode-signed (Thomas Schmitz, via Azure Trusted Signing); macOS
-builds are Developer ID signed and notarized.
-
-**On macOS, only notarized apps will run** — see [below](#on-macos).
-
-An AppImage is published too. It needs `libfuse2`, which recent Ubuntu releases no longer
-install by default, so on many current systems it will not start unless that is present.
-The tarball has no such requirement, which is why it is the recommended Linux download.
+The upstream application supports Windows, macOS, and Linux. Signing, notarization, and available package formats depend on the specific build; upstream release assurances do not establish the signing status of a fork build. The macOS notes below describe upstream packaging behavior.
 
 ## What it does
 
